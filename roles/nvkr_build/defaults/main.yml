@@ -1,0 +1,47 @@
+---
+# ── Local registry the Runs publish into ─────────────────────────────────
+# distribution/distribution, pinned by digest, on loopback only.
+nvkr_build_registry_name: nvkr-registry
+nvkr_build_registry_image: registry:3.1.2@sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+nvkr_build_registry_bind: 127.0.0.1
+nvkr_build_registry_port: 5000
+nvkr_build_registry_data_dir: "{{ nvkr_home }}/registry"
+
+# ── Runs ─────────────────────────────────────────────────────────────────
+# NVKR attempts are immutable. Each attempt name is the input set's name, a
+# hash of its rendered inputs and this suffix: same inputs, same attempt, and
+# a completed one is not run again. After a failed attempt, change the suffix
+# to start a new one (NVKR keeps the failed record).
+nvkr_build_attempt_suffix: "01"
+# Per Run, by input set name (hello, nvke-components, nvke-os-amd64): start a
+# new attempt for one Run without rebuilding the others.
+nvkr_build_attempt_suffixes: {}
+nvkr_build_jobs: 4
+# Wall-clock limit for one Run, in seconds (the node image allows 6 hours).
+nvkr_build_timeout: 21600
+# Run logs.
+nvkr_build_log_dir: "{{ nvkr_home }}/logs"
+
+# ── Quickstart (hello) ───────────────────────────────────────────────────
+# The source tag the hello catalog pins: v1.0.0 or v1.1.0, as in the demo.
+nvkr_build_hello_version: v1.0.0
+
+# ── NVKE management-cluster components ───────────────────────────────────
+# Platform of nvkectl and the two seed-cluster images.
+nvkr_build_components_platform: "linux/{{ nvkr_arch | default('amd64') }}"
+
+# ── Verification ─────────────────────────────────────────────────────────
+# Release to verify and the outputs to pull and check (verify entry point).
+nvkr_build_verify_reference: ""
+nvkr_build_verify_outputs: []
+# The producing Run's lifecycle record, when known: every output digest must
+# then equal what that Run observed.
+nvkr_build_verify_record: {}
+# Verified pulls land in <dir>/<release digest>/<output>.
+nvkr_build_verify_dir: "{{ nvkr_home }}/verified"
+
+# Start every Run in a transient systemd scope with CPU accounting (needs
+# systemd). NVKR's local VM admission reads cpu.max in every cgroup from the
+# process to the root; without the scope a Run started from a terminal in a
+# systemd user manager's app.slice fails with NVKR-E-ENGINE-CAPABILITY.
+nvkr_build_run_scope: true

@@ -1,0 +1,85 @@
+---
+# One output of nvkr_build_verify_reference: pull it once (into a temporary
+# directory, renamed when complete) and check its bytes.
+
+- name: Release entry for {{ nvkr_build_verify_output }}
+  ansible.builtin.set_fact:
+    nvkr_build_verify_entry: >-
+      {{ nvkr_build_verify_description.outputs | selectattr('name', 'eq', nvkr_build_verify_output) | first }}
+    nvkr_build_verify_dest: "{{ nvkr_build_verify_root }}/{{ nvkr_build_verify_output }}"
+
+- name: Already pulled? ({{ nvkr_build_verify_output }})
+  ansible.builtin.stat:
+    path: "{{ nvkr_build_verify_dest }}"
+    get_checksum: false
+  register: nvkr_build_verify_dest_stat
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Pull with release pull, which checks the payload - {{ nvkr_build_verify_output }}
+  ansible.builtin.shell:
+    cmd: >-
+      set -e; rm -rf {{ (nvkr_build_verify_dest ~ '.partial') | quote }};
+      {{ nvkr_bin | quote }} release pull --reference {{ nvkr_build_verify_reference | quote }}
+      --output {{ nvkr_build_verify_output | quote }} --out {{ (nvkr_build_verify_dest ~ '.partial') | quote }}
+      --anonymous --plain-http;
+      mv {{ (nvkr_build_verify_dest ~ '.partial') | quote }} {{ nvkr_build_verify_dest | quote }}
+    executable: /bin/bash
+  when: not nvkr_build_verify_dest_stat.stat.exists
+  changed_when: true
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Files of {{ nvkr_build_verify_output }}
+  ansible.builtin.find:
+    paths: "{{ nvkr_build_verify_dest }}"
+    file_type: file
+  register: nvkr_build_verify_files
+  when: nvkr_build_verify_entry.kind == 'executable'
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: SHA-256 of each file of {{ nvkr_build_verify_output }}
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    checksum_algorithm: sha256
+  loop: "{{ nvkr_build_verify_files.files | map(attribute='path') | list }}"
+  register: nvkr_build_verify_sums
+  when: nvkr_build_verify_entry.kind == 'executable'
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The executable's files are the release's build subjects
+  ansible.builtin.assert:
+    that: >-
+      nvkr_build_verify_sums.results | map(attribute='stat.checksum') | map('regex_replace', '^', 'sha256:') | sort
+      == nvkr_build_verify_entry.buildSubjects | map(attribute='digest') | sort
+    fail_msg: >-
+      {{ nvkr_build_verify_output }}: files hash to
+      {{ nvkr_build_verify_sums.results | map(attribute='stat.checksum') | list }}, the release names
+      {{ nvkr_build_verify_entry.buildSubjects | map(attribute='digest') | list }}.
+    quiet: true
+  when: nvkr_build_verify_entry.kind == 'executable'
+
+- name: Read the OCI layout index of {{ nvkr_build_verify_output }}
+  ansible.builtin.slurp:
+    src: "{{ nvkr_build_verify_dest }}/index.json"
+  register: nvkr_build_verify_index
+  when: nvkr_build_verify_entry.kind == 'oci'
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The layout holds the release output's manifest
+  ansible.builtin.assert:
+    that: >-
+      nvkr_build_verify_entry.digest
+      in ((nvkr_build_verify_index.content | b64decode | from_json).manifests | map(attribute='digest') | list)
+    fail_msg: "{{ nvkr_build_verify_output }}: the pulled layout does not hold {{ nvkr_build_verify_entry.digest }}."
+    quiet: true
+  when: nvkr_build_verify_entry.kind == 'oci'
+
+- name: A kind this role knows how to check
+  ansible.builtin.assert:
+    that: nvkr_build_verify_entry.kind in ['executable', 'oci']
+    fail_msg: "{{ nvkr_build_verify_output }} is {{ nvkr_build_verify_entry.kind }}; only executable and oci outputs are checked."
+    quiet: true

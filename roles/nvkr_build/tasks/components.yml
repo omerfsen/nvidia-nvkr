@@ -1,0 +1,75 @@
+---
+# nvkectl and the two seed-cluster images (nvke-controller,
+# cluster-api-provider-provisioned) from NVKR's NVKE release catalog, built
+# from the pinned NVKE source in one Run and published to the local registry.
+
+- name: The nvkr role ran first
+  ansible.builtin.assert:
+    that: nvkr_bin is defined and nvkr_build_registry_address is defined
+    fail_msg: Run omerfsen.nvkr.nvkr and the registry entry point before the components.
+    quiet: true
+
+- name: Components input directory
+  ansible.builtin.file:
+    path: "{{ nvkr_src_dir }}/.nvkr/omerfsen/components"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+
+- name: Definition
+  ansible.builtin.template:
+    src: components-definition.yaml.j2
+    dest: "{{ nvkr_src_dir }}/.nvkr/omerfsen/components/definition.yaml"
+    owner: "{{ nvkr_user }}"
+    mode: "0644"
+  become: true
+
+- name: Read NVKR's local NVKE Environment
+  ansible.builtin.slurp:
+    src: "{{ nvkr_src_dir }}/docs/examples/nvke-tutorial/environment-local.yaml"
+  register: nvkr_build_components_env_src
+
+# NVKR's own local NVKE Environment (Docker, digest-pinned utility container,
+# dry-run signing), pointed at this registry.
+- name: Environment
+  ansible.builtin.copy:
+    dest: "{{ nvkr_src_dir }}/.nvkr/omerfsen/components/environment.yaml"
+    content: >-
+      {{ (nvkr_build_components_env_src.content | b64decode | from_yaml)
+         | combine({'publication': {'repositoryPrefix': nvkr_build_registry_address ~ '/nvke'}}, recursive=true)
+         | to_nice_yaml(indent=2) }}
+    owner: "{{ nvkr_user }}"
+    mode: "0644"
+  become: true
+
+- name: Build and publish the components
+  ansible.builtin.include_tasks: run.yml
+  vars:
+    nvkr_build_run_name: nvke-components
+    nvkr_build_run_cwd: "{{ nvkr_src_dir }}"
+    nvkr_build_run_inputs:
+      - .nvkr/omerfsen/components/definition.yaml
+      - .nvkr/omerfsen/components/environment.yaml
+    nvkr_build_run_publish: true
+    nvkr_build_run_argv:
+      - "{{ nvkr_bin }}"
+      - run
+      - local
+      - --definition
+      - .nvkr/omerfsen/components/definition.yaml
+      - --environment
+      - .nvkr/omerfsen/components/environment.yaml
+      - --attempt
+      - ATTEMPT
+      - --jobs
+      - "{{ nvkr_build_jobs }}"
+      - --capture-inputs-root
+      - .
+      - --publish
+      - --ui=plain
+
+- name: The components release
+  ansible.builtin.set_fact:
+    nvkr_build_components_release: "{{ nvkr_build_release }}"
+    nvkr_build_components_record: "{{ nvkr_build_record }}"

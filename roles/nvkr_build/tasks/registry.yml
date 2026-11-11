@@ -1,0 +1,90 @@
+---
+# A local OCI registry for the Runs to publish into: one container, data on
+# the host, loopback only. A container on another image or address is
+# replaced; the data directory is kept.
+
+- name: Registry data directory
+  ansible.builtin.file:
+    path: "{{ nvkr_build_registry_data_dir }}"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+
+- name: Existing registry container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - inspect
+      - "{{ nvkr_build_registry_name }}"
+      - --format
+      - "{{ '{{' }}.Config.Image{{ '}}' }} {{ '{{' }}.State.Running{{ '}}' }} {{ '{{' }}json .HostConfig.PortBindings{{ '}}' }}"
+  register: nvkr_build_registry_inspect
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: What the registry container should be
+  ansible.builtin.set_fact:
+    nvkr_build_registry_wanted: >-
+      {{ nvkr_build_registry_image }} true
+      {"5000/tcp":[{"HostIp":"{{ nvkr_build_registry_bind }}","HostPort":"{{ nvkr_build_registry_port }}"}]}
+
+- name: Replace a registry container that differs
+  ansible.builtin.command: docker rm -f {{ nvkr_build_registry_name }}
+  when:
+    - nvkr_build_registry_inspect.rc == 0
+    - (nvkr_build_registry_inspect.stdout.split(' ')[0] != nvkr_build_registry_image)
+      or (nvkr_build_registry_inspect.stdout.split(' ', 2)[2] | from_json)
+         != (nvkr_build_registry_wanted.split(' ', 2)[2] | from_json)
+  register: nvkr_build_registry_removed
+  changed_when: true
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Start a stopped registry container
+  ansible.builtin.command: docker start {{ nvkr_build_registry_name }}
+  when:
+    - nvkr_build_registry_inspect.rc == 0
+    - nvkr_build_registry_removed is skipped
+    - nvkr_build_registry_inspect.stdout.split(' ')[1] != 'true'
+  changed_when: true
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Create the registry container
+  ansible.builtin.command:
+    argv:
+      - docker
+      - run
+      - --detach
+      - --name
+      - "{{ nvkr_build_registry_name }}"
+      - --restart
+      - unless-stopped
+      - --label
+      - io.github.omerfsen.nvkr=registry
+      - --publish
+      - "{{ nvkr_build_registry_bind }}:{{ nvkr_build_registry_port }}:5000"
+      - --volume
+      - "{{ nvkr_build_registry_data_dir }}:/var/lib/registry"
+      - "{{ nvkr_build_registry_image }}"
+  when: nvkr_build_registry_inspect.rc != 0 or nvkr_build_registry_removed is changed
+  changed_when: true
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The registry answers
+  ansible.builtin.uri:
+    url: http://{{ nvkr_build_registry_bind }}:{{ nvkr_build_registry_port }}/v2/
+    status_code: 200
+  register: nvkr_build_registry_ready
+  retries: 30
+  delay: 1
+  until: nvkr_build_registry_ready.status == 200
+
+- name: Where Runs publish
+  ansible.builtin.set_fact:
+    nvkr_build_registry_address: "{{ nvkr_build_registry_bind }}:{{ nvkr_build_registry_port }}"

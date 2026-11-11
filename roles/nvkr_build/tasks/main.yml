@@ -1,0 +1,20 @@
+---
+# Everything an NVKE management cluster needs from NVKR: the local registry,
+# nvkectl and the seed-cluster images (published, then pulled and checked),
+# and the node image (kept with its Run record).
+
+- name: Local registry
+  ansible.builtin.include_tasks: registry.yml
+
+- name: NVKE components
+  ansible.builtin.include_tasks: components.yml
+
+- name: Check the components release
+  ansible.builtin.include_tasks: verify.yml
+  vars:
+    nvkr_build_verify_reference: "{{ nvkr_build_components_release }}"
+    nvkr_build_verify_outputs: "{{ nvkr_build_components_record.expected | map(attribute='name') | list }}"
+    nvkr_build_verify_record: "{{ nvkr_build_components_record }}"
+
+- name: Node image
+  ansible.builtin.include_tasks: node_image.yml

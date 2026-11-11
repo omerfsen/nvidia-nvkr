@@ -1,0 +1,214 @@
+---
+# Prerequisites and the NVKR CLI from a pinned release tag: packages, Docker
+# with a dedicated Buildx builder, the exact Go from the release's .go-version,
+# the checkout and `GOTOOLCHAIN=local make build`. Root tasks use become;
+# everything under nvkr_home belongs to nvkr_user.
+
+- name: Architecture of the build host
+  ansible.builtin.set_fact:
+    nvkr_arch: "{{ {'x86_64': 'amd64', 'aarch64': 'arm64'}[ansible_facts.architecture] | default('unsupported') }}"
+
+- name: The host can build NVKR
+  ansible.builtin.assert:
+    that:
+      - nvkr_arch != 'unsupported'
+      - ansible_facts.os_family == 'Debian'
+      - nvkr_user | length > 0
+      - nvkr_user != 'root'
+    fail_msg: >-
+      NVKR builds on a Debian or Ubuntu host, amd64 or arm64, as a non-root
+      user (nvkr_user) that can use Docker.
+    quiet: true
+
+# ── Packages ─────────────────────────────────────────────────────────────
+- name: Installed packages
+  ansible.builtin.package_facts:
+
+- name: Docker is installed?
+  ansible.builtin.command: sh -c 'command -v docker'
+  register: nvkr_docker_cmd
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Packages to install
+  ansible.builtin.set_fact:
+    nvkr_missing_packages: >-
+      {{ (nvkr_packages
+          + ((nvkr_docker_cmd.rc != 0 and nvkr_docker_install) | ternary(['docker.io', 'docker-buildx'], [])))
+         | reject('in', ansible_facts.packages) | list }}
+
+# The apt cache is refreshed only when something is missing, so a broken
+# third-party source on the host cannot fail a run that installs nothing.
+- name: Install missing packages
+  ansible.builtin.apt:
+    name: "{{ nvkr_missing_packages }}"
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+  become: true
+  when: nvkr_missing_packages | length > 0
+
+- name: Docker must be present
+  ansible.builtin.command: docker version --format '{{ "{{" }}.Server.Version{{ "}}" }}'
+  register: nvkr_docker_version
+  changed_when: false
+  become: true
+  check_mode: false
+
+- name: Groups that exist on this host
+  ansible.builtin.getent:
+    database: group
+
+- name: The build user can use Docker and KVM
+  ansible.builtin.user:
+    name: "{{ nvkr_user }}"
+    groups: "{{ ['docker', 'kvm'] | select('in', ansible_facts.getent_group) | list }}"
+    append: true
+  become: true
+
+# ── Layout ───────────────────────────────────────────────────────────────
+- name: Directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+  loop:
+    - "{{ nvkr_home }}"
+    - "{{ nvkr_home }}/downloads"
+    - "{{ nvkr_home }}/src"
+    - "{{ nvkr_home }}/cache"
+
+# ── Go ───────────────────────────────────────────────────────────────────
+- name: Download Go {{ nvkr_go_version }}
+  ansible.builtin.get_url:
+    url: https://go.dev/dl/go{{ nvkr_go_version }}.linux-{{ nvkr_arch }}.tar.gz
+    dest: "{{ nvkr_home }}/downloads/go{{ nvkr_go_version }}.linux-{{ nvkr_arch }}.tar.gz"
+    checksum: sha256:{{ nvkr_go_sha256[nvkr_arch] }}
+    owner: "{{ nvkr_user }}"
+    mode: "0644"
+  become: true
+
+- name: Go directory
+  ansible.builtin.file:
+    path: "{{ nvkr_home }}/go-{{ nvkr_go_version }}"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+
+- name: Unpack Go
+  ansible.builtin.unarchive:
+    src: "{{ nvkr_home }}/downloads/go{{ nvkr_go_version }}.linux-{{ nvkr_arch }}.tar.gz"
+    dest: "{{ nvkr_home }}/go-{{ nvkr_go_version }}"
+    remote_src: true
+    extra_opts: [--strip-components=1]
+    creates: "{{ nvkr_home }}/go-{{ nvkr_go_version }}/bin/go"
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+# ── Buildx builder ───────────────────────────────────────────────────────
+# The Packer toolchain build exports with `--output type=docker,dest=-,
+# rewrite-timestamp=true`, which Docker's default `docker` driver refuses on a
+# daemon without the containerd image store. A docker-container builder does
+# it without changing the daemon; NVKR's commands get it through BUILDX_BUILDER.
+# The builder record is per user (~/.docker/buildx), its container is
+# daemon-wide: decide from both. Buildx also gives a new builder the host's
+# GPUs, so one created before the GPU was passed through to a VM no longer
+# starts ("nvml error: driver not loaded"); it is recreated.
+- name: The Buildx builder starts
+  ansible.builtin.command: docker buildx inspect --bootstrap {{ nvkr_buildx_builder }}
+  register: nvkr_builder_boot
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Image of the builder's container
+  ansible.builtin.command: docker inspect buildx_buildkit_{{ nvkr_buildx_builder }}0 --format '{{ "{{" }}.Config.Image{{ "}}" }}'
+  register: nvkr_builder_image
+  changed_when: false
+  failed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Create the Buildx builder (again, if it does not start or runs another BuildKit)
+  ansible.builtin.shell:
+    cmd: >-
+      docker buildx rm -f {{ nvkr_buildx_builder | quote }} >/dev/null 2>&1 || true;
+      docker rm -f buildx_buildkit_{{ nvkr_buildx_builder | quote }}0 >/dev/null 2>&1 || true;
+      docker buildx create --name {{ nvkr_buildx_builder | quote }} --driver docker-container
+      --driver-opt image={{ nvkr_buildkit_image | quote }} --bootstrap
+    executable: /bin/bash
+  when: nvkr_builder_boot.rc != 0 or nvkr_builder_image.stdout != nvkr_buildkit_image
+  changed_when: true
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+# ── NVKR ─────────────────────────────────────────────────────────────────
+- name: Check out NVKR {{ nvkr_version }}
+  ansible.builtin.git:
+    repo: "{{ nvkr_repo }}"
+    dest: "{{ nvkr_src_dir }}"
+    version: "{{ nvkr_version }}"
+    force: false
+  register: nvkr_git
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The tag resolves to the pinned commit
+  ansible.builtin.assert:
+    that: nvkr_git.after == nvkr_commit
+    fail_msg: "{{ nvkr_version }} resolves to {{ nvkr_git.after }}, not {{ nvkr_commit }}. Check the tag before building from it."
+    quiet: true
+
+- name: Read the release's Go version
+  ansible.builtin.slurp:
+    src: "{{ nvkr_src_dir }}/.go-version"
+  register: nvkr_go_version_file
+
+- name: The release wants this Go
+  ansible.builtin.assert:
+    that: (nvkr_go_version_file.content | b64decode | trim) == nvkr_go_version
+    fail_msg: >-
+      {{ nvkr_version }} requires Go {{ nvkr_go_version_file.content | b64decode | trim }},
+      not {{ nvkr_go_version }}. Set nvkr_go_version and nvkr_go_sha256.
+    quiet: true
+
+- name: Is nvkr built?
+  ansible.builtin.stat:
+    path: "{{ nvkr_src_dir }}/bin/nvkr"
+    get_checksum: false
+  register: nvkr_bin_stat
+
+- name: Build nvkr (GOTOOLCHAIN=local make build)
+  ansible.builtin.command:
+    cmd: make build
+    chdir: "{{ nvkr_src_dir }}"
+  environment: "{{ nvkr_environment }}"
+  when: nvkr_git.changed or not nvkr_bin_stat.stat.exists
+  changed_when: true
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Version of the built CLI
+  ansible.builtin.command: "{{ nvkr_src_dir }}/bin/nvkr --version"
+  register: nvkr_cli_version
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The CLI is the pinned release, built from a clean tree
+  ansible.builtin.assert:
+    that: nvkr_cli_version.stdout == 'nvkr version ' ~ nvkr_version ~ ' (' ~ nvkr_commit[:8] ~ ')'
+    fail_msg: "Expected 'nvkr version {{ nvkr_version }} ({{ nvkr_commit[:8] }})', got '{{ nvkr_cli_version.stdout }}'."
+    quiet: true
+
+- name: Where the CLI is
+  ansible.builtin.set_fact:
+    nvkr_bin: "{{ nvkr_src_dir }}/bin/nvkr"

@@ -1,0 +1,18 @@
+---
+# Written by omerfsen.nvkr.nvkr_handoff. NVKR-built artifacts for
+# omerfsen.nvke (needs its prebuilt-artifact options):
+#   ansible-playbook -i inventory/kvm playbooks/kvm.yml -e @{{ nvkr_handoff_vars_file }}
+#
+# NVKR {{ nvkr_version }} ({{ nvkr_commit }}) building NVKE {{ nvkr_handoff_nvke_version }}.
+# Components release: {{ nvkr_build_components_release }}
+# Node image Run:     {{ nvkr_build_node_image_record.attempt | default('') }} ({{ nvkr_handoff_disk_digest }})
+
+node_image_file: {{ nvkr_handoff_disk_path }}
+# OVN-Kubernetes the image stages: upstream {{ nvkr_handoff_cni_version }} from NVKR's node-image
+# catalog, not the NVIDIA 2.4.2 NVKE v0.22.0 pins (see the README's known gaps).
+nvke_cni_version: {{ nvkr_handoff_cni_version }}
+nvke_nvkectl_file: {{ nvkr_build_verified['nvkectl'] }}/nvkectl
+nvke_controller_image_archive: {{ nvkr_handoff_images.controller.archive }}
+nvke_controller_image: {{ nvkr_handoff_images.controller.ref }}
+nvke_provisioned_image_archive: {{ nvkr_handoff_images.provisioned.archive }}
+nvke_provisioned_image: {{ nvkr_handoff_images.provisioned.ref }}

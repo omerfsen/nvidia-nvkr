@@ -1,0 +1,50 @@
+---
+# Smoke test: NVKR's hello example end to end. Builds the nvkr CLI, starts the
+# local registry, pins and builds hello, publishes the release, pulls it back,
+# checks its digests and runs the binary.
+#
+#   ansible-playbook omerfsen.nvkr.quickstart
+
+- name: NVKR quickstart
+  hosts: nvkr_hosts
+  gather_facts: true
+  tasks:
+    - name: NVKR CLI
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr
+        # Its variables (nvkr_user, nvkr_home, nvkr_environment...) are what
+        # nvkr_build runs with.
+        public: true
+
+    - name: Local registry
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: registry
+
+    - name: Build and publish hello
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: hello
+        public: true
+
+    - name: Pull and check the hello release
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: verify
+      vars:
+        nvkr_build_verify_reference: "{{ nvkr_build_release }}"
+        nvkr_build_verify_outputs: [hello]
+        nvkr_build_verify_record: "{{ nvkr_build_record }}"
+
+    - name: Run the verified hello
+      ansible.builtin.command: "{{ nvkr_build_verified.hello }}/hello team"
+      register: nvkr_quickstart_hello
+      changed_when: false
+      become: true
+      become_user: "{{ nvkr_user }}"
+
+    - name: It is the build NVKR made
+      ansible.builtin.assert:
+        that: nvkr_quickstart_hello.stdout is search('This is hello ' ~ nvkr_build_hello_version ~ ', built by NVKR')
+        fail_msg: "Unexpected output: {{ nvkr_quickstart_hello.stdout }}"
+        success_msg: "{{ nvkr_quickstart_hello.stdout }} ({{ nvkr_build_release }})"

@@ -1,0 +1,130 @@
+---
+# Hands NVKR's outputs to omerfsen.nvke, which then deploys exactly them:
+#   - the node image, from the Run that built it, checked against that Run's
+#     record and copied where libvirt can read it
+#   - nvkectl, as pulled and checked from the components release
+#   - the two seed-cluster images, as OCI archives for `nerdctl load`, made
+#     the way NVKR's own NVKE demo does: the pulled layout with one
+#     org.opencontainers.image.ref.name annotation added to its index, image
+#     bytes untouched (the manifest digest is checked)
+# and writes a vars file for omerfsen.nvke's playbooks.
+
+- name: The build ran first
+  ansible.builtin.assert:
+    that:
+      - nvkr_build_verified is defined
+      - nvkr_build_components_release is defined
+      - nvkr_build_node_image_path is defined
+      - (['nvkectl', 'nvke-controller', 'cluster-api-provider-provisioned'] | difference(nvkr_build_verified.keys())) | length == 0
+    fail_msg: >-
+      Run omerfsen.nvkr.nvkr_build (main) in the same play first: it provides the
+      checked components release and the node image.
+    quiet: true
+
+- name: Handoff directory
+  ansible.builtin.file:
+    path: "{{ nvkr_handoff_dir }}/images"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+
+# ── nvkectl ──────────────────────────────────────────────────────────────
+- name: Version of the checked nvkectl
+  ansible.builtin.command: "{{ nvkr_build_verified['nvkectl'] }}/nvkectl version"
+  register: nvkr_handoff_nvkectl_version
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The nvkectl is the NVKE release omerfsen.nvke pins
+  ansible.builtin.assert:
+    that:
+      - "nvkr_handoff_nvkectl_version.stdout is search('^nvkectl ' ~ nvkr_handoff_nvke_version ~ ' ')"
+      - "nvkr_handoff_nvkectl_version.stdout is search('commit: ' ~ nvkr_handoff_nvke_commit)"
+    fail_msg: >-
+      NVKR built "{{ nvkr_handoff_nvkectl_version.stdout }}"; omerfsen.nvke expects
+      {{ nvkr_handoff_nvke_version }} ({{ nvkr_handoff_nvke_commit }}).
+    quiet: true
+
+# ── Seed-cluster images ──────────────────────────────────────────────────
+- name: Image archives for nerdctl load
+  ansible.builtin.include_tasks: image.yml
+  loop:
+    - {output: nvke-controller, name: nke-controller, var: controller}
+    - {output: cluster-api-provider-provisioned, name: cluster-api-provider-provisioned, var: provisioned}
+  loop_control:
+    loop_var: nvkr_handoff_image
+    label: "{{ nvkr_handoff_image.output }}"
+
+# ── Node image ───────────────────────────────────────────────────────────
+- name: The node image the Run observed
+  ansible.builtin.set_fact:
+    nvkr_handoff_disk_digest: "{{ (nvkr_build_node_image_record.observed | first).digest }}"
+
+- name: Node image destination
+  ansible.builtin.set_fact:
+    nvkr_handoff_disk_path: >-
+      {{ nvkr_handoff_image_dir }}/{{ (nvkr_build_node_image_record.observed | first).name
+      }}-nvkr-{{ nvkr_handoff_disk_digest.split(':')[1][:12] }}.qcow2
+
+- name: Is the node image already handed off?
+  ansible.builtin.stat:
+    path: "{{ nvkr_handoff_disk_path }}"
+    checksum_algorithm: sha256
+  register: nvkr_handoff_disk_stat
+  become: true
+
+# Copied under a temporary name and renamed only when it hashes to the Run's
+# observation, so a broken copy never sits under the final name.
+- name: Copy the node image for libvirt
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      tmp={{ (nvkr_handoff_disk_path ~ '.partial') | quote }}
+      install -m 0644 -o root -g root {{ nvkr_build_node_image_path | quote }} "$tmp"
+      test "sha256:$(sha256sum "$tmp" | cut -d' ' -f1)" = {{ nvkr_handoff_disk_digest | quote }} \
+        || { rm -f "$tmp"; echo "copy does not hash to the Run's observation" >&2; exit 1; }
+      mv "$tmp" {{ nvkr_handoff_disk_path | quote }}
+    executable: /bin/bash
+  become: true
+  when: not nvkr_handoff_disk_stat.stat.exists
+  changed_when: true
+
+- name: Checksum of the handed-off node image
+  ansible.builtin.stat:
+    path: "{{ nvkr_handoff_disk_path }}"
+    checksum_algorithm: sha256
+  register: nvkr_handoff_disk_final
+  become: true
+
+- name: The node image is the bytes NVKR's Run observed
+  ansible.builtin.assert:
+    that: ('sha256:' ~ nvkr_handoff_disk_final.stat.checksum) == nvkr_handoff_disk_digest
+    fail_msg: "{{ nvkr_handoff_disk_path }} hashes to {{ nvkr_handoff_disk_final.stat.checksum }}, the Run observed {{ nvkr_handoff_disk_digest }}."
+    quiet: true
+
+# ── CNI version on the image ─────────────────────────────────────────────
+# omerfsen.nvke installs the OVN-Kubernetes packages for nvke_cni_version
+# from the image's local repository. NVKR v0.1.0's node-image catalogs build
+# upstream OVN-Kubernetes (v1.4.0), not the NVIDIA 2.4.2 that NVKE v0.22.0's
+# own image stages, so take the version from the pin the image was built from.
+- name: Read the node-image catalog lock
+  ansible.builtin.slurp:
+    src: "{{ nvkr_src_dir }}/inputs/catalogs/node-images/diagnostic/pins.lock.yaml"
+  register: nvkr_handoff_os_lock
+
+- name: OVN-Kubernetes version on the node image
+  ansible.builtin.set_fact:
+    nvkr_handoff_cni_version: >-
+      {{ ((nvkr_handoff_os_lock.content | b64decode | from_yaml).pins['ovn-kubernetes'].tag) | regex_replace('^v', '') }}
+
+# ── Vars for omerfsen.nvke ───────────────────────────────────────────────
+- name: Vars file for omerfsen.nvke
+  ansible.builtin.template:
+    src: nvke-vars.yml.j2
+    dest: "{{ nvkr_handoff_vars_file }}"
+    owner: "{{ nvkr_user }}"
+    mode: "0644"
+  become: true

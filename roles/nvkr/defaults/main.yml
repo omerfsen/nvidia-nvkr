@@ -1,0 +1,53 @@
+---
+# ── NVKR release ─────────────────────────────────────────────────────────
+# A release tag and the commit it must resolve to: a moved tag fails the run.
+# v0.1.0 is a lightweight tag; it pins NVKE v0.22.0.
+nvkr_version: v0.1.0
+nvkr_commit: 5163d525c52869bb8a92e83e2ef316364e5f8d2d
+nvkr_repo: https://github.com/dsx-ai-factory/nvkr.git
+
+# ── Layout ───────────────────────────────────────────────────────────────
+# The user that owns the checkout and runs every build. It must be able to
+# use Docker (this role adds it to the docker group) and, for node images,
+# /dev/kvm.
+nvkr_user: "{{ ansible_user | default(lookup('env', 'USER')) }}"
+nvkr_home: /var/lib/nvkr
+nvkr_src_dir: "{{ nvkr_home }}/src/nvkr-{{ nvkr_version }}"
+
+# ── Go, the exact version in the release's .go-version ───────────────────
+# Checksums from https://go.dev/dl/?mode=json&include=all.
+nvkr_go_version: 1.27.3
+nvkr_go_sha256:
+  amd64: 65efbc80fdc1fa2cd2631cad5b481777a68e8725f34e89f50fc6ac714e379b40
+  arm64: a06e99309dbcbdca1a8ccd2282c3ee146e55930886e26b4f1193269587165f49
+
+# ── Host packages (Debian/Ubuntu) ────────────────────────────────────────
+# Git 2.38+, Make, Python 3 and jq from the README and the OS wrapper;
+# rsync and curl for the roles here.
+nvkr_packages:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - make
+  - python3
+  - rsync
+# Install Docker from the distribution (docker.io, docker-buildx) when no
+# docker command exists. A host that already has Docker is left alone.
+nvkr_docker_install: true
+
+# ── Buildx builder for the Packer toolchain image ────────────────────────
+# A docker-container builder: Docker's default driver cannot export with
+# rewrite-timestamp unless the daemon uses the containerd image store.
+nvkr_buildx_builder: nvkr-buildkit
+nvkr_buildkit_image: moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+
+# Environment for every Go/NVKR command: the pinned Go first on PATH, no
+# automatic toolchain switch, caches under nvkr_home.
+nvkr_environment:
+  PATH: "{{ nvkr_home }}/go-{{ nvkr_go_version }}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+  GOTOOLCHAIN: local
+  GOPATH: "{{ nvkr_home }}/cache/gopath"
+  GOCACHE: "{{ nvkr_home }}/cache/go-build"
+  GOMODCACHE: "{{ nvkr_home }}/cache/gomod"
+  BUILDX_BUILDER: "{{ nvkr_buildx_builder }}"

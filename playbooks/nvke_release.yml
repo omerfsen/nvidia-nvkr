@@ -1,0 +1,70 @@
+---
+# The NVKE outputs a management cluster needs, built by NVKR from the NVKE
+# release its v0.1.0 recipe pins (v0.22.0):
+#   - nvkectl, nke-controller and cluster-api-provider-provisioned images:
+#     one Run, published to the local registry, pulled back and checked
+#   - the amd64 node image (non-FDE QCOW2): one Run with NVKR's local route,
+#     kept with its Run record (NVKR does not publish disks from a local Run)
+#
+#   ansible-playbook omerfsen.nvkr.nvke_release
+#   ansible-playbook omerfsen.nvkr.nvke_release --tags components   # skip the 1 h disk build
+
+- name: NVKE outputs with NVKR
+  hosts: nvkr_hosts
+  gather_facts: true
+  tasks:
+    - name: NVKR CLI
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr
+        public: true
+        apply:
+          tags: [always]
+      tags: [always]
+
+    - name: Local registry
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: registry
+        public: true
+        apply:
+          tags: [components]
+      tags: [components]
+
+    - name: Build and publish nvkectl and the seed-cluster images
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: components
+        public: true
+        apply:
+          tags: [components]
+      tags: [components]
+
+    - name: Pull and check the components release
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: verify
+        public: true
+        apply:
+          tags: [components]
+      vars:
+        nvkr_build_verify_reference: "{{ nvkr_build_components_release }}"
+        nvkr_build_verify_outputs: "{{ nvkr_build_components_record.expected | map(attribute='name') | list }}"
+        nvkr_build_verify_record: "{{ nvkr_build_components_record }}"
+      tags: [components]
+
+    - name: Build the node image
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        tasks_from: node_image
+        public: true
+        apply:
+          tags: [node_image]
+      tags: [node_image]
+
+    - name: Summary
+      ansible.builtin.debug:
+        msg:
+          - "components release: {{ nvkr_build_components_release | default('not built in this run') }}"
+          - "verified outputs: {{ nvkr_build_verified | default({}) }}"
+          - "node image: {{ nvkr_build_node_image_path | default('not built in this run') }}"
+      tags: [always]

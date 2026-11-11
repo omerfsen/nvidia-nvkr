@@ -1,0 +1,74 @@
+---
+# The NVKE node image (non-FDE QCOW2, Ubuntu 26.04.1) with NVKR's own local
+# route, scripts/nvke-os-local.sh: it builds the Packer toolchain from its
+# source lock, freezes the observed image ID into the attempt's inputs and
+# runs one local Run of the maintained diagnostics Definition. NVKR keeps the
+# disk with the Run record; it does not publish disks from a local Run.
+
+- name: The nvkr role ran first
+  ansible.builtin.assert:
+    that: nvkr_bin is defined
+    fail_msg: Run omerfsen.nvkr.nvkr before the node image.
+    quiet: true
+
+- name: KVM is usable by the build user
+  ansible.builtin.command: sh -c 'exec 3<>/dev/kvm'
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Build the node image
+  ansible.builtin.include_tasks: run.yml
+  vars:
+    nvkr_build_run_name: nvke-os-{{ nvkr_arch }}
+    nvkr_build_run_cwd: "{{ nvkr_src_dir }}"
+    # The maintained inputs the wrapper reads, so an NVKR bump starts a new attempt.
+    nvkr_build_run_inputs:
+      - scripts/nvke-os-local.sh
+      - inputs/definitions/diagnostics/os-{{ nvkr_arch }}.yaml
+      - inputs/environments/local-linux-{{ nvkr_arch }}-kvm.yaml
+      - inputs/catalogs/node-images/diagnostic/registry.yaml
+      - inputs/catalogs/node-images/diagnostic/pins.lock.yaml
+      - toolchains/nvkr-packer/toolchain.lock.json
+    nvkr_build_run_env:
+      CONTAINER_RUNTIME: docker
+      NVKE_OS_ARCH: "{{ nvkr_arch }}"
+    nvkr_build_run_argv:
+      - bash
+      - scripts/nvke-os-local.sh
+      - ATTEMPT
+      - "{{ nvkr_build_jobs }}"
+
+- name: The node image
+  ansible.builtin.set_fact:
+    nvkr_build_node_image_record: "{{ nvkr_build_record }}"
+    nvkr_build_node_image_path: "{{ nvkr_build_attempt_dir }}/outputs/{{ nvkr_build_record.observed[0].name }}.qcow2"
+
+# NVKR records the disk's digest but does not re-check the OCI images it bakes
+# into it (the OVN images, for one), and a flipped bit in a layer only shows up
+# at the node's first boot, when containerd refuses the layer. Every blob of
+# every OCI image the Run produced must hash to its name.
+- name: OCI images the node image Run produced
+  ansible.builtin.find:
+    paths: "{{ nvkr_build_attempt_dir }}"
+    patterns: "*.oci.tar"
+    recurse: true
+  register: nvkr_build_os_oci
+  become: true
+
+- name: Every blob of those images hashes to its name
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      work=$(mktemp -d); trap 'rm -rf "$work"' EXIT
+      tar -C "$work" -xf {{ item | quote }} blobs
+      bad=0
+      for blob in "$work"/blobs/sha256/*; do
+        [ "$(sha256sum "$blob" | cut -d' ' -f1)" = "$(basename "$blob")" ] || { echo "corrupt blob: $(basename "$blob")"; bad=1; }
+      done
+      exit "$bad"
+    executable: /bin/bash
+  loop: "{{ nvkr_build_os_oci.files | map(attribute='path') | list }}"
+  changed_when: false
+  become: true

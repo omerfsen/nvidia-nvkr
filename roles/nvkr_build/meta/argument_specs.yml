@@ -1,0 +1,231 @@
+---
+argument_specs:
+  main:
+    short_description: Build everything an NVKE management cluster needs with NVKR.
+    description:
+      - Starts the local registry, builds and publishes nvkectl and the two seed-cluster images (C(nvke-controller),
+        C(cluster-api-provider-provisioned)) from NVKR's NVKE release catalog, pulls and checks them, then builds
+        the node image with NVKR's local route.
+      - Sets C(nvkr_build_components_release), C(nvkr_build_verified), C(nvkr_build_node_image_path) and the Run
+        records. Run omerfsen.nvkr.nvkr first.
+    author: Omer Sen
+    options:
+      nvkr_build_registry_name:
+        type: str
+        default: nvkr-registry
+        description: Registry container name.
+      nvkr_build_registry_image:
+        type: str
+        default: registry:3.1.2@sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+        description: Registry image, pinned by digest. A container on another image or address is replaced; its
+          data is kept.
+      nvkr_build_registry_bind:
+        type: str
+        default: 127.0.0.1
+        description: 'Address the registry listens on. Loopback: Runs publish over plain HTTP without credentials.'
+      nvkr_build_registry_port:
+        type: int
+        default: 5000
+        description: Registry port.
+      nvkr_build_registry_data_dir:
+        type: path
+        description: Registry storage. Defaults to C(<nvkr_home>/registry).
+      nvkr_build_attempt_suffix:
+        type: str
+        default: '01'
+        description: 'Last part of every attempt name. NVKR attempts are immutable: after a failed attempt set a
+          new value to start another.'
+      nvkr_build_attempt_suffixes:
+        type: dict
+        default: {}
+        description: Attempt suffix per Run, by input set name (C(hello), C(nvke-components), C(nvke-os-amd64)),
+          overriding O(nvkr_build_attempt_suffix) for that Run only.
+      nvkr_build_jobs:
+        type: int
+        default: 4
+        description: Producer jobs per Run (C(--jobs)).
+      nvkr_build_timeout:
+        type: int
+        default: 21600
+        description: Wall-clock limit for one Run, in seconds.
+      nvkr_build_log_dir:
+        type: path
+        description: Run logs. Defaults to C(<nvkr_home>/logs).
+      nvkr_build_components_platform:
+        type: str
+        description: Platform of nvkectl and the two seed-cluster images. Defaults to the build hosts, C(linux/<nvkr_arch>).
+      nvkr_build_verify_reference:
+        type: str
+        default: ''
+        description: Release to check, C(repository@sha256:...).
+      nvkr_build_verify_outputs:
+        type: list
+        elements: str
+        default: &id002 []
+        description: Output names to pull and check.
+      nvkr_build_verify_record:
+        type: dict
+        default: &id003 {}
+        description: The producing Run's lifecycle record; when set, every output digest must equal what that Run
+          observed.
+      nvkr_build_verify_dir:
+        type: path
+        description: Verified pulls land in C(<dir>/<release digest>/<output>). Defaults to C(<nvkr_home>/verified).
+      nvkr_build_run_scope: &id001
+        type: bool
+        default: true
+        description: Start every Run in a transient systemd scope with CPU accounting, then drop to nvkr_user with
+          runuser. NVKRs local VM admission reads cpu.max in every cgroup up to the root and fails where the cpu
+          controller is off, as in a systemd user managers app.slice (tmux, desktop terminals).
+  registry:
+    short_description: Start the local OCI registry the Runs publish into.
+    description:
+      - One container on a digest-pinned image, loopback only, data on the host. Sets C(nvkr_build_registry_address).
+    author: Omer Sen
+    options:
+      nvkr_build_registry_name:
+        type: str
+        default: nvkr-registry
+        description: Registry container name.
+      nvkr_build_registry_image:
+        type: str
+        default: registry:3.1.2@sha256:38907510915c3f1604c7e83d6ab602ab3020d092f73bdaed8696773693ff768c
+        description: Registry image, pinned by digest. A container on another image or address is replaced; its
+          data is kept.
+      nvkr_build_registry_bind:
+        type: str
+        default: 127.0.0.1
+        description: 'Address the registry listens on. Loopback: Runs publish over plain HTTP without credentials.'
+      nvkr_build_registry_port:
+        type: int
+        default: 5000
+        description: Registry port.
+      nvkr_build_registry_data_dir:
+        type: path
+        description: Registry storage. Defaults to C(<nvkr_home>/registry).
+  hello:
+    short_description: Build and publish NVKR's hello example (the quickstart).
+    description:
+      - Copies NVKR's demos/quickstart inputs, creates the tiny source repository and pins its tag as demos/demo-local.sh
+        does, then one Run builds hello, records its SBOM and publishes it to the local registry with dry-run signing.
+      - Sets C(nvkr_build_release) and C(nvkr_build_record).
+    author: Omer Sen
+    options:
+      nvkr_build_attempt_suffix:
+        type: str
+        default: '01'
+        description: 'Last part of every attempt name. NVKR attempts are immutable: after a failed attempt set a
+          new value to start another.'
+      nvkr_build_attempt_suffixes:
+        type: dict
+        default: {}
+        description: Attempt suffix per Run, by input set name (C(hello), C(nvke-components), C(nvke-os-amd64)),
+          overriding O(nvkr_build_attempt_suffix) for that Run only.
+      nvkr_build_jobs:
+        type: int
+        default: 4
+        description: Producer jobs per Run (C(--jobs)).
+      nvkr_build_timeout:
+        type: int
+        default: 21600
+        description: Wall-clock limit for one Run, in seconds.
+      nvkr_build_log_dir:
+        type: path
+        description: Run logs. Defaults to C(<nvkr_home>/logs).
+      nvkr_build_hello_version:
+        type: str
+        default: v1.0.0
+        description: Source tag the hello catalog pins, C(v1.0.0) or C(v1.1.0).
+      nvkr_build_run_scope: *id001
+  components:
+    short_description: Build and publish nvkectl and the seed-cluster images.
+    description:
+      - One Run of a Definition over NVKR's C(inputs/catalogs/nvke/release) catalog with NVKR's local NVKE Environment
+        pointed at the local registry.
+      - Sets C(nvkr_build_components_release) and C(nvkr_build_components_record).
+    author: Omer Sen
+    options:
+      nvkr_build_attempt_suffix:
+        type: str
+        default: '01'
+        description: 'Last part of every attempt name. NVKR attempts are immutable: after a failed attempt set a
+          new value to start another.'
+      nvkr_build_attempt_suffixes:
+        type: dict
+        default: {}
+        description: Attempt suffix per Run, by input set name (C(hello), C(nvke-components), C(nvke-os-amd64)),
+          overriding O(nvkr_build_attempt_suffix) for that Run only.
+      nvkr_build_jobs:
+        type: int
+        default: 4
+        description: Producer jobs per Run (C(--jobs)).
+      nvkr_build_timeout:
+        type: int
+        default: 21600
+        description: Wall-clock limit for one Run, in seconds.
+      nvkr_build_log_dir:
+        type: path
+        description: Run logs. Defaults to C(<nvkr_home>/logs).
+      nvkr_build_components_platform:
+        type: str
+        description: Platform of nvkectl and the two seed-cluster images. Defaults to the build hosts, C(linux/<nvkr_arch>).
+      nvkr_build_run_scope: *id001
+  node_image:
+    short_description: Build the NVKE node image with NVKR's local route.
+    description:
+      - 'Runs NVKR''s C(scripts/nvke-os-local.sh) for the host''s architecture: Packer toolchain from its source
+        lock, the maintained diagnostics Definition, one local Run with KVM. NVKR keeps the QCOW2 with its Run record
+        and does not publish disks from a local Run.'
+      - Sets C(nvkr_build_node_image_path) and C(nvkr_build_node_image_record).
+    author: Omer Sen
+    options:
+      nvkr_build_attempt_suffix:
+        type: str
+        default: '01'
+        description: 'Last part of every attempt name. NVKR attempts are immutable: after a failed attempt set a
+          new value to start another.'
+      nvkr_build_attempt_suffixes:
+        type: dict
+        default: {}
+        description: Attempt suffix per Run, by input set name (C(hello), C(nvke-components), C(nvke-os-amd64)),
+          overriding O(nvkr_build_attempt_suffix) for that Run only.
+      nvkr_build_jobs:
+        type: int
+        default: 4
+        description: Producer jobs per Run (C(--jobs)).
+      nvkr_build_timeout:
+        type: int
+        default: 21600
+        description: Wall-clock limit for one Run, in seconds.
+      nvkr_build_log_dir:
+        type: path
+        description: Run logs. Defaults to C(<nvkr_home>/logs).
+      nvkr_build_run_scope: *id001
+  verify:
+    short_description: Pull a published release's outputs and check their digests.
+    description:
+      - Validates the release metadata, checks each output against the producing Run's record when given, pulls
+        it (release pull checks the payload) and checks executable files against the release's build subjects and
+        OCI layouts against the output digest. Fails the play on any mismatch.
+      - 'This is not signature verification: NVKR''s release verify accepts only the pipeline-attested lane, and
+        a local Run is unsigned.'
+      - Sets C(nvkr_build_verified), output name to directory.
+    author: Omer Sen
+    options:
+      nvkr_build_verify_reference:
+        type: str
+        default: ''
+        description: Release to check, C(repository@sha256:...).
+      nvkr_build_verify_outputs:
+        type: list
+        elements: str
+        default: *id002
+        description: Output names to pull and check.
+      nvkr_build_verify_record:
+        type: dict
+        default: *id003
+        description: The producing Run's lifecycle record; when set, every output digest must equal what that Run
+          observed.
+      nvkr_build_verify_dir:
+        type: path
+        description: Verified pulls land in C(<dir>/<release digest>/<output>). Defaults to C(<nvkr_home>/verified).

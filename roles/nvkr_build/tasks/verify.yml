@@ -1,0 +1,86 @@
+---
+# Consumer-side checks of a published release, failing the play on any
+# mismatch. NVKR's `release verify` only accepts the pipeline-attested lane
+# (keyless signatures from its GitHub Actions workflow); a local Run is
+# unsigned, so these checks are about integrity and binding, not signatures:
+#   - the release metadata closure validates (`release browse`)
+#   - every requested output is in it, and, given the producing Run's record,
+#     has the digest that Run observed
+#   - `release pull` checks each payload against the metadata
+#   - an executable's files hash to the release's build subjects; an OCI
+#     layout's manifest is the release output's digest
+# Verified outputs stay in nvkr_build_verify_dir for the handoff.
+
+- name: The nvkr role ran first
+  ansible.builtin.assert:
+    that:
+      - nvkr_bin is defined
+      - nvkr_build_verify_reference is regex('^[^@]+@sha256:[0-9a-f]{64}$')
+      - nvkr_build_verify_outputs | length > 0
+    fail_msg: Set nvkr_build_verify_reference (repository@sha256:...) and nvkr_build_verify_outputs, after omerfsen.nvkr.nvkr.
+    quiet: true
+
+- name: Release metadata (release browse)
+  ansible.builtin.command:
+    argv:
+      - "{{ nvkr_bin }}"
+      - release
+      - browse
+      - --reference
+      - "{{ nvkr_build_verify_reference }}"
+      - --format
+      - json
+      - --anonymous
+      - --plain-http
+  register: nvkr_build_verify_browse
+  changed_when: false
+  check_mode: false
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The release description
+  ansible.builtin.set_fact:
+    nvkr_build_verify_description: "{{ nvkr_build_verify_browse.stdout | from_json }}"
+    nvkr_build_verify_root: "{{ nvkr_build_verify_dir }}/{{ nvkr_build_verify_reference.split('@sha256:')[1][:16] }}"
+
+- name: Every requested output is in the release
+  ansible.builtin.assert:
+    that:
+      - nvkr_build_verify_description.schemaVersion == 'nvkr.dev/release-description/v1'
+      - nvkr_build_verify_description.rootDigest == nvkr_build_verify_reference.split('@')[1]
+      - nvkr_build_verify_outputs | difference(nvkr_build_verify_description.outputs | map(attribute='name')) | length == 0
+    fail_msg: >-
+      {{ nvkr_build_verify_reference }} has outputs
+      {{ nvkr_build_verify_description.outputs | map(attribute='name') | list }};
+      requested {{ nvkr_build_verify_outputs }}.
+    quiet: true
+
+- name: Each output has the digest its producing Run observed
+  ansible.builtin.assert:
+    that: >-
+      (nvkr_build_verify_description.outputs | selectattr('name', 'eq', item) | first).digest
+      == (nvkr_build_verify_record.observed | selectattr('name', 'eq', item) | first).digest
+    fail_msg: "{{ item }}: the release digest differs from the producing Run's observation."
+    quiet: true
+  loop: "{{ nvkr_build_verify_outputs }}"
+  when: nvkr_build_verify_record | length > 0
+
+- name: Verified outputs directory
+  ansible.builtin.file:
+    path: "{{ nvkr_build_verify_root }}"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+
+- name: Pull and check each output
+  ansible.builtin.include_tasks: verify_output.yml
+  loop: "{{ nvkr_build_verify_outputs }}"
+  loop_control:
+    loop_var: nvkr_build_verify_output
+
+- name: Where the verified outputs are
+  ansible.builtin.set_fact:
+    nvkr_build_verified: >-
+      {{ dict(nvkr_build_verify_outputs
+              | zip(nvkr_build_verify_outputs | map('regex_replace', '^', nvkr_build_verify_root ~ '/'))) }}

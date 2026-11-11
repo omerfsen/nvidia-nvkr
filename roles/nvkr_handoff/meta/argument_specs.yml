@@ -1,0 +1,40 @@
+---
+argument_specs:
+  main:
+    short_description: Hand NVKR-built nvkectl, seed-cluster images and node image to omerfsen.nvke.
+    description:
+      - Runs after omerfsen.nvkr.nvkr_build (main) in the same play, which provides the checked components release
+        and the node image Run.
+      - Refuses an nvkectl that is not O(nvkr_handoff_nvke_version) at O(nvkr_handoff_nvke_commit).
+      - Packs each seed-cluster image as an OCI archive for C(nerdctl load), as NVKR's own NVKE demo does - the checked
+        layout with an C(org.opencontainers.image.ref.name) annotation on its one manifest, image bytes unchanged.
+      - Copies the node image into O(nvkr_handoff_image_dir) under a name with its digest and checks it hashes to
+        what the producing Run observed.
+      - Writes O(nvkr_handoff_vars_file) for omerfsen.nvke's prebuilt-artifact options
+        (C(node_image_file), C(nvke_nvkectl_file), C(nvke_*_image_archive), C(nvke_*_image)), and C(nvke_cni_version), which is
+        the OVN-Kubernetes version of the node image, read from NVKR's node-image catalog lock (upstream 1.4.0
+        for NVKR v0.1.0, where NVKE v0.22.0's own image has NVIDIA 2.4.2).
+    author: Omer Sen
+    options:
+      nvkr_handoff_dir:
+        type: path
+        description: Image archives and the vars file go here. Defaults to C(<nvkr_home>/handoff).
+      nvkr_handoff_vars_file:
+        type: path
+        description: Vars file for omerfsen.nvke. Defaults to C(<nvkr_handoff_dir>/nvke-vars.yml).
+      nvkr_handoff_image_dir:
+        type: path
+        default: /var/lib/libvirt/images
+        description: Where the node image is copied, readable by libvirt.
+      nvkr_handoff_image_prefix:
+        type: str
+        default: nvkr.local/nvke
+        description: Repository prefix of the references the seed-cluster images load as.
+      nvkr_handoff_nvke_version:
+        type: str
+        default: v0.22.0
+        description: NVKE release omerfsen.nvke pins; nvkectl must report it.
+      nvkr_handoff_nvke_commit:
+        type: str
+        default: 400c24fb6465b042be883d6b62472528520d6291
+        description: NVKE commit nvkectl must report.

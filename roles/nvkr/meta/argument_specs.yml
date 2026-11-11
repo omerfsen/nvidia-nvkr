@@ -1,0 +1,65 @@
+---
+argument_specs:
+  main:
+    short_description: Build the NVKR CLI from a pinned release tag.
+    description:
+      - Installs Git, Make, jq, Python 3 and curl, and Docker with Buildx when no docker command exists.
+      - Adds O(nvkr_user) to the docker and kvm groups and creates a docker-container Buildx builder on a
+        digest-pinned BuildKit, which the node-image toolchain export needs on a daemon without the
+        containerd image store.
+      - Installs the Go that the release's C(.go-version) names, checksum verified, and refuses another version.
+      - Checks out NVKR at O(nvkr_version), refusing a tag that does not resolve to O(nvkr_commit), and runs
+        C(GOTOOLCHAIN=local make build). The built CLI must report exactly that version and commit.
+      - Sets C(nvkr_bin). Runs on a Debian or Ubuntu host, amd64 or arm64; root tasks use become.
+    author: Omer Sen
+    options:
+      nvkr_version:
+        type: str
+        default: v0.1.0
+        description: NVKR release tag.
+      nvkr_commit:
+        type: str
+        default: 5163d525c52869bb8a92e83e2ef316364e5f8d2d
+        description: Commit the tag must resolve to.
+      nvkr_repo:
+        type: str
+        default: https://github.com/dsx-ai-factory/nvkr.git
+        description: NVKR Git repository.
+      nvkr_user:
+        type: str
+        description:
+          - Non-root user that owns the checkout and runs every build; must be able to use Docker and KVM.
+          - Defaults to the connection user, or the controller's E(USER) on a local connection.
+      nvkr_home:
+        type: path
+        default: /var/lib/nvkr
+        description: Go, the checkout, caches, logs, the registry data and verified pulls live here.
+      nvkr_src_dir:
+        type: path
+        description: NVKR checkout. Defaults to C(<nvkr_home>/src/nvkr-<nvkr_version>).
+      nvkr_go_version:
+        type: str
+        default: 1.27.3
+        description: Go version; must equal the release's C(.go-version).
+      nvkr_go_sha256:
+        type: dict
+        description: SHA-256 of the Go tarball per architecture (C(amd64), C(arm64)), from go.dev.
+      nvkr_packages:
+        type: list
+        elements: str
+        description: Debian/Ubuntu packages to install.
+      nvkr_docker_install:
+        type: bool
+        default: true
+        description: Install docker.io and docker-buildx when the host has no docker command.
+      nvkr_buildx_builder:
+        type: str
+        default: nvkr-buildkit
+        description: Name of the docker-container Buildx builder NVKR's commands use (E(BUILDX_BUILDER)).
+      nvkr_buildkit_image:
+        type: str
+        default: moby/buildkit:v0.34.0@sha256:b059f8d7226d0b326bc871af489a5dddf65e36af4d20d14251b072974d9ee87c
+        description: BuildKit image of that builder, pinned by digest. A builder on another image is replaced.
+      nvkr_environment:
+        type: dict
+        description: Environment for every Go and NVKR command (pinned Go on E(PATH), E(GOTOOLCHAIN=local), caches, E(BUILDX_BUILDER)).

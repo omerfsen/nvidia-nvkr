@@ -1,0 +1,53 @@
+---
+namespace: omerfsen
+name: nvkr
+version: 0.1.0 # x-release-please-version
+readme: README.md
+authors:
+  - Omer Sen
+description: >-
+  Build NVIDIA Kubernetes Engine (NVKE) artifacts with NVIDIA Kubernetes
+  Recipes (NVKR): the pinned nvkr CLI, a local OCI registry, local Runs that
+  publish a Release, consumer-side verification, and a handoff of the node
+  image and nvkectl to omerfsen.nvke.
+license:
+  - Apache-2.0
+
+tags:
+  - nvkr
+  - nvke
+  - nvidia
+  - kubernetes
+  - k8s
+  - sbom
+  - supplychain
+  - infrastructure
+dependencies: {}
+repository: https://github.com/omerfsen/nvidia-nvkr
+documentation: https://github.com/omerfsen/nvidia-nvkr/blob/main/README.md
+issues: https://github.com/omerfsen/nvidia-nvkr/issues
+build_ignore:
+  - .venv
+  - .collections
+  - .ansible
+  - .github
+  - .git
+  - tools
+  - tests
+  - Makefile
+  - ansible.cfg
+  - graphify-out
+  - AGENTS.md
+  - CLAUDE.md
+  - "*.tar.gz"
+  - "*.qcow2"
+  - "*.iso"
+  - "*.key"
+  - "*.pem"
+  - ".vault_pass*"
+  - "*.img"
+  - "*.raw"
+  - importer_result.json
+  - "*.local.yml"
+  - inventory/*/group_vars/all/local.yml
+  - inventory/*/host_vars

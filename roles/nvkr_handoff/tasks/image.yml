@@ -1,0 +1,53 @@
+---
+# One seed-cluster image: the checked OCI layout, renamed for containerd by
+# one index annotation, packed as an archive for `nerdctl load`.
+
+# The verify step already checked that this layout holds the release's
+# manifest for the output.
+- name: Index of the checked layout - {{ nvkr_handoff_image.output }}
+  ansible.builtin.slurp:
+    src: "{{ nvkr_build_verified[nvkr_handoff_image.output] }}/index.json"
+  register: nvkr_handoff_image_index
+  become: true
+
+- name: Digest of {{ nvkr_handoff_image.output }}
+  ansible.builtin.set_fact:
+    nvkr_handoff_image_digest: "{{ ((nvkr_handoff_image_index.content | b64decode | from_json).manifests | first).digest }}"
+
+- name: Reference of {{ nvkr_handoff_image.output }}
+  ansible.builtin.set_fact:
+    nvkr_handoff_image_ref: >-
+      {{ nvkr_handoff_image_prefix }}/{{ nvkr_handoff_image.name }}:nvkr-{{ nvkr_handoff_image_digest.split(':')[1][:12] }}
+
+- name: Archive of {{ nvkr_handoff_image.output }}
+  ansible.builtin.set_fact:
+    nvkr_handoff_image_archive: >-
+      {{ nvkr_handoff_dir }}/images/{{ nvkr_handoff_image.name }}-{{ nvkr_handoff_image_digest.split(':')[1][:12]
+      }}-{{ (nvkr_handoff_image_ref | hash('sha1'))[:8] }}.oci.tar
+
+- name: Make the archive of {{ nvkr_handoff_image.output }}
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      work={{ (nvkr_handoff_image_archive ~ '.d') | quote }}
+      rm -rf "$work" {{ (nvkr_handoff_image_archive ~ '.partial') | quote }}
+      cp -a {{ nvkr_build_verified[nvkr_handoff_image.output] | quote }} "$work"
+      jq --arg ref {{ nvkr_handoff_image_ref | quote }} --arg digest {{ nvkr_handoff_image_digest | quote }} '
+        if (.manifests | length) != 1 or .manifests[0].digest != $digest
+        then error("layout does not hold exactly the release manifest") else . end
+        | .manifests[0].annotations = ((.manifests[0].annotations // {}) + {"org.opencontainers.image.ref.name": $ref})
+      ' "$work/index.json" > "$work/index.json.new"
+      mv "$work/index.json.new" "$work/index.json"
+      tar -C "$work" -cf {{ (nvkr_handoff_image_archive ~ '.partial') | quote }} oci-layout index.json blobs
+      rm -rf "$work"
+      mv {{ (nvkr_handoff_image_archive ~ '.partial') | quote }} {{ nvkr_handoff_image_archive | quote }}
+    executable: /bin/bash
+    creates: "{{ nvkr_handoff_image_archive }}"
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Remember {{ nvkr_handoff_image.output }}
+  ansible.builtin.set_fact:
+    nvkr_handoff_images: >-
+      {{ nvkr_handoff_images | default({}) | combine({nvkr_handoff_image.var:
+         {'archive': nvkr_handoff_image_archive, 'ref': nvkr_handoff_image_ref, 'digest': nvkr_handoff_image_digest}}) }}

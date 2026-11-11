@@ -1,0 +1,24 @@
+# Written by omerfsen.nvkr.nvkr_build. nvkectl and the two images that
+# `nvkectl bootstrap site` side-loads into its seed cluster, from NVKR's
+# maintained NVKE release catalog (NVKE v0.22.0 for NVKR v0.1.0). Output
+# names are in sorted order, as NVKR requires.
+apiVersion: nvkr.dev/definition/v5
+kind: Definition
+metadata:
+  name: nvke-mgmt-{{ nvkr_build_components_platform | replace('linux/', '') }}
+  description: nvkectl and the seed-cluster images for an NVKE management cluster.
+catalog:
+  base: ../../../inputs/catalogs/nvke/release
+outputs:
+  - name: cluster-api-provider-provisioned
+    platform: {{ nvkr_build_components_platform }}
+    format: oci
+    components: [cluster-api-provider-provisioned]
+  - name: nvke-controller
+    platform: {{ nvkr_build_components_platform }}
+    format: oci
+    components: [nvke-controller]
+  - name: nvkectl
+    platform: {{ nvkr_build_components_platform }}
+    format: executable
+    components: [nvkectl]

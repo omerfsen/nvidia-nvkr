@@ -1,0 +1,33 @@
+---
+# Hands the NVKR outputs to omerfsen.nvke. Runs the build again first, which
+# does nothing for attempts that already completed and gives this play the
+# checked releases and the node image.
+#
+#   ansible-playbook omerfsen.nvkr.handoff
+#   then, in omerfsen.nvke (with its prebuilt-artifact options):
+#   ansible-playbook -i inventory/kvm playbooks/kvm.yml -e @/var/lib/nvkr/handoff/nvke-vars.yml
+
+- name: NVKR outputs to omerfsen.nvke
+  hosts: nvkr_hosts
+  gather_facts: true
+  tasks:
+    - name: NVKR CLI
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr
+        public: true
+
+    - name: NVKE outputs (already built attempts are not run again)
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_build
+        public: true
+
+    - name: Hand them off
+      ansible.builtin.include_role:
+        name: omerfsen.nvkr.nvkr_handoff
+        public: true
+
+    - name: Next
+      ansible.builtin.debug:
+        msg:
+          - "vars for omerfsen.nvke: {{ nvkr_handoff_vars_file }}"
+          - "ansible-playbook -i inventory/kvm playbooks/kvm.yml -e @{{ nvkr_handoff_vars_file }}"

@@ -1,0 +1,157 @@
+---
+# One NVKR Run, shared by the hello, components and node_image entry points.
+# Callers set:
+#   nvkr_build_run_name        input set name, the attempt's prefix
+#   nvkr_build_run_cwd         directory the command runs in (attempts land in .nvkr/runs here)
+#   nvkr_build_run_inputs      files (relative to cwd) whose bytes name the attempt
+#   nvkr_build_run_argv        the command, with ATTEMPT standing for the attempt name
+#   nvkr_build_run_env         extra environment (optional)
+#   nvkr_build_run_publish     whether the Run publishes a release (optional)
+# and get back nvkr_build_attempt, nvkr_build_attempt_dir, nvkr_build_record
+# and, for a publishing Run, nvkr_build_release.
+
+- name: Read the inputs that name the attempt ({{ nvkr_build_run_name }})
+  ansible.builtin.slurp:
+    src: "{{ nvkr_build_run_cwd }}/{{ item }}"
+  loop: "{{ nvkr_build_run_inputs }}"
+  register: nvkr_build_run_input_bytes
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Attempt name
+  ansible.builtin.set_fact:
+    nvkr_build_attempt: >-
+      {{ nvkr_build_run_name }}-{{ (nvkr_build_run_input_bytes.results | map(attribute='content') | join('|'))
+         | hash('sha256') | truncate(12, true, '') }}-{{ nvkr_build_attempt_suffixes[nvkr_build_run_name]
+         | default(nvkr_build_attempt_suffix) }}
+
+- name: Attempt directory
+  ansible.builtin.set_fact:
+    nvkr_build_attempt_dir: "{{ nvkr_build_run_cwd }}/.nvkr/runs/{{ nvkr_build_attempt }}"
+
+- name: Is there a record for this attempt?
+  ansible.builtin.stat:
+    path: "{{ nvkr_build_attempt_dir }}/lifecycle.json"
+    get_checksum: false
+  register: nvkr_build_record_stat
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Read the existing record
+  ansible.builtin.slurp:
+    src: "{{ nvkr_build_attempt_dir }}/lifecycle.json"
+  register: nvkr_build_record_old
+  when: nvkr_build_record_stat.stat.exists
+
+# NVKR never reuses an attempt name: a failed or interrupted attempt stays as
+# a record, and a new attempt needs a new name.
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Was this attempt started before? (reserved inputs or attempt directory)
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop:
+    - "{{ nvkr_build_attempt_dir }}"
+    - "{{ nvkr_build_run_cwd }}/.nvkr/inputs/{{ nvkr_build_attempt }}"
+  register: nvkr_build_attempt_paths
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: A started attempt must have completed
+  ansible.builtin.assert:
+    that: >-
+      (nvkr_build_record_stat.stat.exists
+       and (nvkr_build_record_old.content | b64decode | from_json).status == 'complete')
+      or (nvkr_build_attempt_paths.results | selectattr('stat.exists') | list | length == 0)
+    fail_msg: >-
+      Attempt {{ nvkr_build_attempt }} was started before and did not complete
+      ({{ (nvkr_build_record_old.content | b64decode | from_json).status
+          if nvkr_build_record_stat.stat.exists else 'no lifecycle record' }}).
+      NVKR attempts are immutable: keep it for diagnosis and set
+      nvkr_build_attempt_suffixes['{{ nvkr_build_run_name }}'] (or nvkr_build_attempt_suffix
+      for every Run) to a new value to start another.
+    quiet: true
+
+- name: Log directory
+  ansible.builtin.file:
+    path: "{{ nvkr_build_log_dir }}"
+    state: directory
+    owner: "{{ nvkr_user }}"
+    mode: "0755"
+  become: true
+
+- name: How the Run is started
+  ansible.builtin.set_fact:
+    nvkr_build_run_prefix: >-
+      {{ (nvkr_build_run_scope | ternary(['/usr/bin/systemd-run', '--quiet', '--scope', '-p', 'CPUAccounting=yes', '--'], []))
+         + ['/usr/sbin/runuser', '-u', nvkr_user, '--',
+            '/bin/bash', '-c', 'exec "$@" > "$0" 2>&1', nvkr_build_log_dir ~ '/' ~ nvkr_build_attempt ~ '.log'] }}
+
+# Absolute paths for what root runs (nvkr_environment's PATH starts with a
+# directory nvkr_user owns), and the log is written by nvkr_user's own shell.
+- name: Run the attempt, logging to nvkr_build_log_dir - {{ nvkr_build_attempt }}
+  ansible.builtin.shell:
+    cmd: >-
+      {{ nvkr_build_run_prefix | map('quote') | join(' ') }}
+      {{ nvkr_build_run_argv | map('replace', 'ATTEMPT', nvkr_build_attempt) | map('quote') | join(' ') }}
+      || { rc=$?; /usr/bin/tail -n 40 {{ (nvkr_build_log_dir ~ '/' ~ nvkr_build_attempt ~ '.log') | quote }}; exit $rc; }
+    chdir: "{{ nvkr_build_run_cwd }}"
+    executable: /bin/bash
+  environment: "{{ nvkr_environment | combine(nvkr_build_run_env | default({})) }}"
+  when: not nvkr_build_record_stat.stat.exists
+  changed_when: true
+  async: "{{ nvkr_build_timeout | int }}"
+  poll: 30
+  # Root starts the Run in its own systemd scope with CPU accounting, then
+  # runuser drops to nvkr_user with that user's groups (docker, kvm). NVKR's
+  # VM admission reads cpu.max in every cgroup from the process up to the
+  # root and fails where the cpu controller is off, as in a systemd user
+  # manager's app.slice (tmux, desktop terminals).
+  become: true
+
+- name: Read the record
+  ansible.builtin.slurp:
+    src: "{{ nvkr_build_attempt_dir }}/lifecycle.json"
+  register: nvkr_build_record_raw
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The record
+  ansible.builtin.set_fact:
+    nvkr_build_record: "{{ nvkr_build_record_raw.content | b64decode | from_json }}"
+
+- name: The Run completed every required output
+  ansible.builtin.assert:
+    that:
+      - nvkr_build_record.status == 'complete'
+      - nvkr_build_record.lane == 'unqualified-local-execution'
+      - nvkr_build_record.failure | default(none) is none
+      - nvkr_build_record.expected | length > 0
+      - nvkr_build_record.observed | length == nvkr_build_record.expected | length
+    fail_msg: >-
+      {{ nvkr_build_attempt }}: status {{ nvkr_build_record.status }},
+      {{ nvkr_build_record.observed | length }} of {{ nvkr_build_record.expected | length }} outputs,
+      failure {{ nvkr_build_record.failure | default('none') }}.
+    quiet: true
+
+- name: Read the published release reference
+  ansible.builtin.slurp:
+    src: "{{ nvkr_build_attempt_dir }}/publications/release.txt"
+  register: nvkr_build_release_raw
+  when: nvkr_build_run_publish | default(false)
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: The release reference
+  ansible.builtin.set_fact:
+    nvkr_build_release: "{{ nvkr_build_release_raw.content | b64decode | trim }}"
+  when: nvkr_build_run_publish | default(false)
+
+- name: The release reference is pinned by digest
+  ansible.builtin.assert:
+    that: nvkr_build_release is regex('^[^@]+@sha256:[0-9a-f]{64}$')
+    fail_msg: "Published reference is not digest-pinned: {{ nvkr_build_release }}"
+    quiet: true
+  when: nvkr_build_run_publish | default(false)

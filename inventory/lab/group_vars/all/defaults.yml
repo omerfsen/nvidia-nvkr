@@ -1,0 +1,9 @@
+---
+# Lab defaults. Put this machine's overrides in local.yml next to this file
+# (gitignored, loaded after this one).
+
+# Where the nvkr CLI, its Go toolchain, attempts and verified pulls live.
+nvkr_home: /var/lib/nvkr
+
+# Local registry the Runs publish into, loopback only.
+nvkr_build_registry_port: 5000

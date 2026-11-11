@@ -1,0 +1,128 @@
+---
+# The quickstart: NVKR's own hello example (demos/quickstart), as
+# demos/demo-local.sh runs it, plus publication to the local registry. A tiny
+# Git repository stands in for the source, the catalog pins its tag, and one
+# Run builds, records an SBOM and publishes the release.
+
+- name: The nvkr role ran first
+  ansible.builtin.assert:
+    that: nvkr_bin is defined
+    fail_msg: Run omerfsen.nvkr.nvkr before omerfsen.nvkr.nvkr_build.
+    quiet: true
+
+- name: Hello work directory
+  ansible.builtin.set_fact:
+    nvkr_build_hello_dir: "{{ nvkr_src_dir }}/.nvkr/omerfsen/hello-{{ nvkr_build_hello_version }}"
+    # Scoped to these commands, as in the demo: no user Git configuration, the
+    # catalog's placeholder URL redirected to the local source repository and
+    # fixed author dates, so the pinned commit is the same on every host.
+    nvkr_build_hello_git_env:
+      GIT_CONFIG_NOSYSTEM: "1"
+      GIT_CONFIG_GLOBAL: /dev/null
+      GIT_CONFIG_COUNT: "1"
+      GIT_CONFIG_KEY_0: url.{{ nvkr_src_dir }}/.nvkr/omerfsen/hello-{{ nvkr_build_hello_version }}/source.insteadOf
+      GIT_CONFIG_VALUE_0: https://demo.example.invalid/hello
+      GIT_AUTHOR_NAME: NVKR Demo
+      GIT_AUTHOR_EMAIL: demo@example.invalid
+      GIT_COMMITTER_NAME: NVKR Demo
+      GIT_COMMITTER_EMAIL: demo@example.invalid
+      GIT_AUTHOR_DATE: "2026-01-01T00:00:00Z"
+      GIT_COMMITTER_DATE: "2026-01-01T00:00:00Z"
+
+- name: The hello source version is one the demo knows
+  ansible.builtin.assert:
+    that: nvkr_build_hello_version in ['v1.0.0', 'v1.1.0']
+    fail_msg: nvkr_build_hello_version is v1.0.0 or v1.1.0.
+    quiet: true
+
+- name: Copy the quickstart inputs
+  ansible.builtin.shell:
+    cmd: >-
+      set -e; mkdir -p {{ nvkr_build_hello_dir | quote }};
+      cp -R demos/quickstart/catalog demos/quickstart/source demos/quickstart/definition.yaml
+      {{ nvkr_build_hello_dir | quote }}/
+    chdir: "{{ nvkr_src_dir }}"
+    creates: "{{ nvkr_build_hello_dir }}/definition.yaml"
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Create the hello source repository with tags v1.0.0 and v1.1.0
+  ansible.builtin.shell:
+    cmd: |
+      set -euo pipefail
+      # From a clean copy every time this runs: a run that stopped part-way
+      # leaves no marker and is redone.
+      rm -rf source
+      cp -R {{ (nvkr_src_dir ~ '/demos/quickstart/source') | quote }} source
+      g() { git -C source -c commit.gpgsign=false -c tag.gpgSign=false -c core.autocrlf=false "$@"; }
+      g init -q --template= --object-format=sha1 --initial-branch=main
+      g add hello.sh
+      g commit -q -m 'hello v1.0.0'
+      g tag v1.0.0
+      python3 -I -c "from pathlib import Path; p = Path('source/hello.sh'); p.write_text(p.read_text().replace('Hello, %s!', 'Welcome, %s!'))"
+      g add hello.sh
+      g commit -q -m 'hello v1.1.0'
+      g tag v1.1.0
+      touch source/.git/nvkr-tags-done
+    chdir: "{{ nvkr_build_hello_dir }}"
+    executable: /bin/bash
+    creates: "{{ nvkr_build_hello_dir }}/source/.git/nvkr-tags-done"
+  environment: "{{ nvkr_build_hello_git_env }}"
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Pin the source tag in the catalog
+  ansible.builtin.command:
+    argv: ["{{ nvkr_bin }}", catalog, pin, --dir, catalog, --tag, "{{ nvkr_build_hello_version }}", hello]
+    chdir: "{{ nvkr_build_hello_dir }}"
+    creates: "{{ nvkr_build_hello_dir }}/catalog/pins.lock.yaml"
+  environment: "{{ nvkr_environment | combine(nvkr_build_hello_git_env) }}"
+  become: true
+  become_user: "{{ nvkr_user }}"
+
+- name: Read the demo's Environment
+  ansible.builtin.slurp:
+    src: "{{ nvkr_src_dir }}/demos/quickstart/environment.yaml"
+  register: nvkr_build_hello_env_src
+
+# The demo's own Environment (runtime and digest-pinned utility container),
+# plus local publication with dry-run signing as NVKR's local walkthrough uses.
+- name: Environment with local publication
+  ansible.builtin.copy:
+    dest: "{{ nvkr_build_hello_dir }}/environment.yaml"
+    content: >-
+      {{ (nvkr_build_hello_env_src.content | b64decode | from_yaml)
+         | combine({'metadata': {'name': 'local-demo-publish'},
+                    'publication': {'anonymous': true, 'plainHTTP': true,
+                                    'repositoryPrefix': nvkr_build_registry_address ~ '/hello'},
+                    'signing': {'identity': '^local$', 'issuer': 'https://nvkr.dev/local', 'mode': 'dry-run'}},
+                   recursive=true)
+         | to_nice_yaml(indent=2) }}
+    owner: "{{ nvkr_user }}"
+    mode: "0644"
+  become: true
+
+- name: Build and publish hello
+  ansible.builtin.include_tasks: run.yml
+  vars:
+    nvkr_build_run_name: hello
+    nvkr_build_run_cwd: "{{ nvkr_build_hello_dir }}"
+    nvkr_build_run_inputs: [definition.yaml, environment.yaml, catalog/registry.yaml, catalog/pins.lock.yaml]
+    nvkr_build_run_env: "{{ nvkr_build_hello_git_env }}"
+    nvkr_build_run_publish: true
+    nvkr_build_run_argv:
+      - "{{ nvkr_bin }}"
+      - run
+      - local
+      - --definition
+      - definition.yaml
+      - --environment
+      - environment.yaml
+      - --attempt
+      - ATTEMPT
+      - --runner-source
+      - "{{ nvkr_src_dir }}"
+      - --go
+      - "{{ nvkr_home }}/go-{{ nvkr_go_version }}/bin/go"
+      - --publish
+      - --ui=plain

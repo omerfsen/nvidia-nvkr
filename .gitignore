@@ -1,0 +1,29 @@
+# Local tooling
+.venv/
+.collections/
+__pycache__/
+*.pyc
+.ansible/
+graphify-out
+
+# Collection build output
+*.tar.gz
+
+# Artifacts: never commit disks, images or ISOs
+*.qcow2
+*.img
+*.iso
+*.raw
+
+# Keys and credentials
+*.key
+*.pem
+.vault_pass*
+
+# Local inventory overrides
+inventory/*/group_vars/all/local.yml
+inventory/*/host_vars/
+*.local.yml
+
+# galaxy-importer output
+importer_result.json

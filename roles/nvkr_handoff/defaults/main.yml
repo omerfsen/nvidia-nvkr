@@ -1,0 +1,17 @@
+---
+# Where the handoff puts what it prepares, and the vars file omerfsen.nvke
+# reads (`ansible-playbook ... -e @<file>`).
+nvkr_handoff_dir: "{{ nvkr_home }}/handoff"
+nvkr_handoff_vars_file: "{{ nvkr_handoff_dir }}/nvke-vars.yml"
+
+# The node image goes here, named after its digest, readable by libvirt.
+nvkr_handoff_image_dir: /var/lib/libvirt/images
+
+# Image references the seed-cluster images load as on the bootstrap host
+# (<prefix>/<name>:nvkr-<12 hex of the manifest digest>).
+nvkr_handoff_image_prefix: nvkr.local/nvke
+
+# The NVKE release omerfsen.nvke pins: the handoff refuses an nvkectl built
+# from another commit, so the cluster and the node image stay on one release.
+nvkr_handoff_nvke_version: v0.22.0
+nvkr_handoff_nvke_commit: 400c24fb6465b042be883d6b62472528520d6291

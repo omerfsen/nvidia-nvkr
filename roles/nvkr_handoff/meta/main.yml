@@ -1,0 +1,11 @@
+---
+galaxy_info:
+  author: Omer Sen
+  description: Hand NVKR-built nvkectl, seed-cluster images and node image to omerfsen.nvke, checked by digest.
+  license: Apache-2.0
+  min_ansible_version: "2.16"
+  platforms:
+    - name: Ubuntu
+      versions: [noble]
+  galaxy_tags: [nvkr, nvke, nvidia, kubernetes, libvirt]
+dependencies: []
